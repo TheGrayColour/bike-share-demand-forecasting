@@ -1,0 +1,10 @@
+
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+joblib
+tqdm
+torch  # optional, only if you plan to use LSTM/GRU
+jupyter
