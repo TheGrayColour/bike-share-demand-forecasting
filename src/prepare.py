@@ -1,72 +1,138 @@
 """prepare.py
-Simple data preparation utilities for bike-share forecasting.
+
+End-to-end data preparation for the bike-share demand project.
+
+Features:
+* Flexible timestamp parsing (either `timestamp` column or UCI hour format: dteday + hr)
+* Optional hourly resampling to fill gaps / enforce cadence
+* Time-based features (hour/day/month/weekend/year)
+* Configurable target lags
+* Optional weather merge (expects timestamp column)
+
 Usage:
-  python src/prepare.py --input data/hour.csv --output data/processed_hour.csv --lags 1 3 6 24
+    python src/prepare.py \
+        --input /mnt/data/hour.csv \
+        --output data/processed_hour.csv \
+        --lags 1 3 6 24 \
+        --resample \
+        --weather data/weather.csv
 """
+
+from __future__ import annotations
+
 import argparse
-import pandas as pd
-import numpy as np
 from pathlib import Path
+from typing import Iterable
 
-def load_csv(path):
-    """Load CSV and ensure a datetime 'timestamp' column exists.
+import pandas as pd
 
-    Supports:
-    - files that already contain a 'timestamp' column
-    - UCI hour.csv format with 'dteday' and 'hr' columns
-    """
+
+def load_csv(path: str | Path) -> pd.DataFrame:
+    """Load CSV and ensure a datetime `timestamp` column exists."""
     df = pd.read_csv(path)
-    # if timestamp present, parse it; else try to build from dteday + hr
-    if 'timestamp' in df.columns:
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-    elif 'dteday' in df.columns and 'hr' in df.columns:
-        df['dteday'] = pd.to_datetime(df['dteday'])
-        # 'hr' is hour of day (0-23); create timestamp as date + hour
-        df['timestamp'] = df['dteday'] + pd.to_timedelta(df['hr'], unit='h')
+
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+    elif {"dteday", "hr"}.issubset(df.columns):
+        df["dteday"] = pd.to_datetime(df["dteday"])
+        df["timestamp"] = df["dteday"] + pd.to_timedelta(df["hr"], unit="h")
     else:
-        raise ValueError("Input CSV must contain either 'timestamp' or both 'dteday' and 'hr' columns.")
+        raise ValueError("Input CSV must contain either 'timestamp' or both 'dteday' and 'hr'.")
+
+    df = df.sort_values("timestamp").reset_index(drop=True)
     return df
 
-def resample_hourly(df):
-    # Ensure index is timestamp and aggregate numeric columns with hourly mean
-    df = df.set_index('timestamp').resample('H').mean().ffill().reset_index()
+
+def resample_hourly(df: pd.DataFrame) -> pd.DataFrame:
+    """Resample to hourly cadence using forward-fill for missing targets/features."""
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    df = (
+        df.set_index("timestamp")
+        .resample("H")
+        .agg({col: "mean" for col in numeric_cols})
+        .ffill()
+        .reset_index()
+    )
     return df
 
-def add_time_features(df):
-    df['hour'] = df['timestamp'].dt.hour
-    df['dayofweek'] = df['timestamp'].dt.dayofweek
-    df['is_weekend'] = df['dayofweek'] >= 5
-    # also add month/year if available
-    df['month'] = df['timestamp'].dt.month
-    df['year'] = df['timestamp'].dt.year
+
+def merge_weather(df: pd.DataFrame, weather_path: str | Path) -> pd.DataFrame:
+    """Merge hourly weather CSV on timestamp if provided."""
+    weather = pd.read_csv(weather_path, parse_dates=["timestamp"])
+    weather = weather.sort_values("timestamp")
+    suffix_cols = [c for c in weather.columns if c != "timestamp"]
+    weather = weather.rename(columns={col: f"weather_{col}" for col in suffix_cols})
+    merged = df.merge(weather, on="timestamp", how="left")
+    return merged
+
+
+def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add calendar-derived features."""
+    df["hour"] = df["timestamp"].dt.hour
+    df["dayofweek"] = df["timestamp"].dt.dayofweek
+    df["is_weekend"] = (df["dayofweek"] >= 5).astype(int)
+    df["month"] = df["timestamp"].dt.month
+    df["year"] = df["timestamp"].dt.year
     return df
 
-def create_lag_features(df, col='cnt', lags=[1,3,6,24]):
-    df = df.sort_values('timestamp').copy()
+
+def create_lag_features(df: pd.DataFrame, target: str, lags: Iterable[int]) -> pd.DataFrame:
+    """Create lagged versions of the target column."""
+    df = df.sort_values("timestamp").copy()
     for lag in lags:
-        df[f'lag_{lag}'] = df[col].shift(lag)
+        df[f"lag_{lag}"] = df[target].shift(lag)
     return df
 
-def save_csv(df, path):
+
+def save_csv(df: pd.DataFrame, path: str | Path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
 
-def main(args):
+
+def main(args: argparse.Namespace) -> None:
     df = load_csv(args.input)
-    df = resample_hourly(df)
+
+    if args.resample:
+        df = resample_hourly(df)
+
+    if args.weather:
+        df = merge_weather(df, args.weather)
+
     df = add_time_features(df)
+
     if args.lags:
-        df = create_lag_features(df, col=args.target, lags=args.lags)
-    # drop rows with NA created by lags
+        df = create_lag_features(df, target=args.target, lags=args.lags)
+
     df = df.dropna().reset_index(drop=True)
     save_csv(df, args.output)
-    print(f"Saved processed data to {args.output}. Rows: {len(df)}")
+    print(f"Saved processed data to {args.output}. Rows: {len(df):,}")
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--input', required=True, help='input CSV path')
-    parser.add_argument('--output', required=True, help='output processed CSV path')
-    parser.add_argument('--lags', type=int, nargs='*', default=[1,3,6,24], help='lags to create')
-    parser.add_argument('--target', default='cnt', help="target column name (default: 'cnt' for UCI dataset)")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Prepare bike-share demand dataset.")
+    parser.add_argument("--input", required=True, help="Input CSV path (raw hour data)")
+    parser.add_argument("--output", required=True, help="Output processed CSV path")
+    parser.add_argument(
+        "--lags",
+        type=int,
+        nargs="*",
+        default=[1, 3, 6, 24],
+        help="Lag steps (hours) for target column.",
+    )
+    parser.add_argument(
+        "--target",
+        default="cnt",
+        help="Target column name (default: 'cnt' for UCI dataset).",
+    )
+    parser.add_argument(
+        "--resample",
+        action="store_true",
+        help="Resample to hourly cadence before feature engineering.",
+    )
+    parser.add_argument(
+        "--weather",
+        default=None,
+        help="Optional weather CSV with 'timestamp' column to merge.",
+    )
     args = parser.parse_args()
     main(args)

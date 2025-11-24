@@ -1,9 +1,21 @@
-
+# Python artifacts
 __pycache__/
-*.pyc
+*.py[cod]
+.ipynb_checkpoints/
+
+# Environment / secrets
 .env
 .venv/
-models/
-results/
-data/*.csv
-.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+
+# Data
+data/raw/
+data/external/
+data/*.zip
+
+# Large or intermediate results (final JSON/PNG/joblib files are tracked)
+results/tmp/
+models/tmp/
