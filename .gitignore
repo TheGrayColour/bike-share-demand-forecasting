@@ -11,11 +11,20 @@ __pycache__/
 .idea/
 .vscode/
 
-# Data
+# Data (keep README/.gitkeep only)
 data/raw/
 data/external/
 data/*.zip
+data/*.csv
+!data/*.md
+!data/.gitkeep
 
 # Large or intermediate results (final JSON/PNG/joblib files are tracked)
 results/tmp/
 models/tmp/
+
+# Large model files (exceed GitHub 100MB limit)
+models/*.joblib
+models/*.pt
+*.joblib
+*.pt

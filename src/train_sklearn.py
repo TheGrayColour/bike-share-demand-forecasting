@@ -31,7 +31,7 @@ def train_and_save(X, y, model_path):
 
 def evaluate(model, X, y):
     preds = model.predict(X)
-    rmse = mean_squared_error(y, preds, squared=False)
+    rmse = mean_squared_error(y, preds) ** 0.5
     mae = mean_absolute_error(y, preds)
     return {'rmse': float(rmse), 'mae': float(mae)}
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import List, Tuple
 
 import joblib
@@ -42,6 +43,7 @@ def add_cyclical_features(df: pd.DataFrame) -> pd.DataFrame:
         ("hour", 24),
         ("dayofweek", 7),
         ("month", 12),
+        ("dayofyear", 366),
     ]
     for col, period in cycles:
         if col in out.columns:
@@ -53,17 +55,18 @@ def add_cyclical_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def chronological_split(
     df: pd.DataFrame, target: str, test_size: float
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     split_idx = int(len(df) * (1 - test_size))
     train_df = df.iloc[:split_idx].copy()
     test_df = df.iloc[split_idx:].copy()
 
     feature_cols = [c for c in df.columns if c not in {target, "timestamp"}]
-    X_train = train_df[feature_cols]
-    X_test = test_df[feature_cols]
-    y_train = train_df[target]
-    y_test = test_df[target]
-    return X_train, X_test, y_train, y_test
+    X_train = train_df[feature_cols].reset_index(drop=True)
+    X_test = test_df[feature_cols].reset_index(drop=True)
+    y_train = train_df[target].reset_index(drop=True)
+    y_test = test_df[target].reset_index(drop=True)
+    timestamps = test_df["timestamp"].reset_index(drop=True)
+    return X_train, X_test, y_train, y_test, timestamps
 
 
 def build_preprocessor(feature_df: pd.DataFrame) -> ColumnTransformer:
@@ -80,22 +83,22 @@ def build_preprocessor(feature_df: pd.DataFrame) -> ColumnTransformer:
     return preprocessor
 
 
-def build_estimator(model_name: str):
+def build_estimator(model_name: str, args: argparse.Namespace):
     if model_name == "rf":
         estimator = RandomForestRegressor(
-            n_estimators=300,
-            max_depth=20,
-            min_samples_leaf=2,
+            n_estimators=args.rf_n_estimators,
+            max_depth=args.rf_max_depth,
+            min_samples_leaf=args.rf_min_samples_leaf,
             n_jobs=-1,
-            random_state=42,
+            random_state=args.random_state,
         )
     elif model_name == "gbm":
         estimator = GradientBoostingRegressor(
-            n_estimators=600,
-            learning_rate=0.05,
-            max_depth=4,
-            subsample=0.9,
-            random_state=42,
+            n_estimators=args.gbm_n_estimators,
+            learning_rate=args.gbm_learning_rate,
+            max_depth=args.gbm_max_depth,
+            subsample=args.gbm_subsample,
+            random_state=args.random_state,
         )
     else:
         raise ValueError(f"Unsupported model '{model_name}'. Use 'rf' or 'gbm'.")
@@ -129,12 +132,14 @@ def train_pipeline(args: argparse.Namespace) -> None:
     df = df.sort_values("timestamp").reset_index(drop=True)
     df = add_cyclical_features(df)
 
-    X_train, X_test, y_train, y_test = chronological_split(df, target=args.target, test_size=args.test_size)
+    X_train, X_test, y_train, y_test, test_timestamps = chronological_split(df, target=args.target, test_size=args.test_size)
 
     preprocessor = build_preprocessor(X_train)
-    estimator = build_estimator(args.model)
+    estimator = build_estimator(args.model, args)
     pipeline = Pipeline(steps=[("preprocess", preprocessor), ("model", estimator)])
+    start = perf_counter()
     pipeline.fit(X_train, y_train)
+    duration = perf_counter() - start
 
     y_pred = pipeline.predict(X_test)
     metrics = regression_metrics(y_test, y_pred)
@@ -153,14 +158,27 @@ def train_pipeline(args: argparse.Namespace) -> None:
 
     plot_path = output_dir / f"{args.model}_pred_vs_actual.png"
     plot_predictions(
-        timestamps=df.iloc[-len(X_test):]["timestamp"],
+        timestamps=test_timestamps,
         y_true=y_test,
         y_pred=y_pred,
         title=f"{args.model.upper()} predictions vs actual",
         output=plot_path,
     )
 
+    if args.save_predictions:
+        preds_df = pd.DataFrame(
+            {
+                "timestamp": test_timestamps,
+                "y_true": y_test,
+                "y_pred": y_pred,
+            }
+        )
+        preds_path = output_dir / f"{args.model}_test_predictions.csv"
+        preds_df.to_csv(preds_path, index=False)
+        print(f"Saved predictions to {preds_path}")
+
     print(f"{args.model.upper()} metrics: {metrics}")
+    print(f"Training duration: {duration:.2f}s")
     print(f"Saved model to {model_path}")
     print(f"Saved metrics to {metrics_path}")
     print(f"Saved prediction plot to {plot_path}")
@@ -174,6 +192,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", choices=["rf", "gbm"], default="rf", help="Estimator to train.")
     parser.add_argument("--target", default="cnt", help="Target column name.")
     parser.add_argument("--test-size", type=float, default=0.2, help="Fraction for chronological test split.")
+    parser.add_argument("--random_state", type=int, default=42, help="Random seed for estimators.")
+    parser.add_argument("--save-predictions", action="store_true", help="Persist test predictions for ensemble use.")
+    # RF hyperparameters
+    parser.add_argument("--rf-n-estimators", type=int, default=300, help="RandomForest n_estimators.")
+    parser.add_argument("--rf-max-depth", type=int, default=20, help="RandomForest max_depth (None for unlimited).")
+    parser.add_argument("--rf-min-samples-leaf", type=int, default=2, help="RandomForest min_samples_leaf.")
+    # GBM hyperparameters
+    parser.add_argument("--gbm-n-estimators", type=int, default=600, help="GradientBoosting n_estimators.")
+    parser.add_argument("--gbm-learning-rate", type=float, default=0.05, help="GradientBoosting learning rate.")
+    parser.add_argument("--gbm-max-depth", type=int, default=4, help="GradientBoosting max_depth for base estimators.")
+    parser.add_argument("--gbm-subsample", type=float, default=0.9, help="GradientBoosting subsample fraction.")
     return parser.parse_args()
 
 
