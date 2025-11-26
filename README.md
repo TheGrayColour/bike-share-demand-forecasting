@@ -35,9 +35,9 @@ The Makefile encodes the core workflow. Override variables as needed, e.g. `make
 
 | Target | Description |
 | --- | --- |
-| `make prepare` | Run `src/prepare.py` with hourly resampling, lags (`1/3/6/24`), rolling stats (`3/24h`), holidays, weather interactions, and cyclical encodings to produce `data/processed_hour.csv`. |
+| `make prepare` | Run `src/prepare.py` with hourly resampling, lags (`1/3/6/24`), rolling stats (`3/24h`), holidays, weather interactions, and cyclical encodings to produce `data/processed_hour.csv`. Automatically excludes `registered` and `casual` features to prevent data leakage. |
 | `make train` | Train both RandomForest and GradientBoosting pipelines; saves metrics, test predictions, and serialized pipelines. |
-| `make tune` | Launch expanded RandomizedSearchCV sweeps (RF=160 draws, GBM=120) and persist CV tables + tuned models under `results/` & `models/`. |
+| `make tune` | Launch nested cross-validation hyperparameter tuning (outer CV: 5 folds, inner CV: 5 folds with RandomizedSearchCV, RF=160 draws, GBM=120 per inner fold). Persists nested CV results, best parameters, and tuned models under `results/` & `models/`. |
 | `make rolling-eval` | Run the sliding-window retrain/eval script for RF+GBM; outputs JSON summaries and per-window predictions. |
 | `make ensemble` | Solve for optimal ensemble weights given saved prediction CSVs and write `results/ensemble_metrics.json`. |
 | `make ablation` | Execute `src/run_ablation.py` to compare feature subsets; writes `results/feature_ablation.json` + plot. |
@@ -51,7 +51,7 @@ RAW_DATA ?= /mnt/data/hour.csv
 PROCESSED ?= data/processed_hour.csv
 RESULTS ?= results
 MODELS ?= models
-PYTHON ?= python
+PYTHON ?= py  # Uses Windows Python launcher; change to 'python' on macOS/Linux
 ```
 
 ---
@@ -60,36 +60,38 @@ PYTHON ?= python
 
 ### Prepare Data
 ```bash
-python src/prepare.py \
+py src/prepare.py \
     --input /mnt/data/hour.csv \
     --output data/processed_hour.csv \
     --resample-frequency H \
     --lags 1 3 6 24 \
     --rolling-windows 3 24
 ```
+*Note: `registered` and `casual` features are automatically excluded to prevent data leakage (they sum to the target `cnt`).*
 
 ### Train Models
 ```bash
-python src/train_models.py --input data/processed_hour.csv --output_dir results --model_dir models --model rf
-python src/train_models.py --input data/processed_hour.csv --output_dir results --model_dir models --model gbm
+py src/train_models.py --input data/processed_hour.csv --output_dir results --model_dir models --model rf
+py src/train_models.py --input data/processed_hour.csv --output_dir results --model_dir models --model gbm
 ```
 
 ### Baseline & Ablation
 ```bash
-python src/baseline.py --input data/processed_hour.csv --output results/baseline_persistence_metrics.json
-python src/run_ablation.py --input data/processed_hour.csv --output results/feature_ablation.json
+py src/baseline.py --input data/processed_hour.csv --output results/baseline_persistence_metrics.json
+py src/run_ablation.py --input data/processed_hour.csv --output results/feature_ablation.json
 ```
 
-### Hyperparameter Tuning
+### Hyperparameter Tuning (Nested CV)
 ```bash
-python src/tune_models.py --input data/processed_hour.csv --model rf --output-dir results --model-dir models
-python src/tune_models.py --input data/processed_hour.csv --model gbm --output-dir results --model-dir models
-# CV tables land in results/rf_cv_results.json (or gbm equivalent)
+py src/tune_models.py --input data/processed_hour.csv --model rf --output-dir results --model-dir models
+py src/tune_models.py --input data/processed_hour.csv --model gbm --output-dir results --model-dir models
+# Nested CV results land in results/rf_nested_cv_results.json (or gbm equivalent)
+# Note: Tuned models may overfit to CV folds; untuned models often generalize better
 ```
 
 ### Rolling-Origin Evaluation
 ```bash
-python src/rolling_eval.py \
+py src/rolling_eval.py \
     --input data/processed_hour.csv \
     --model rf \
     --train-window 7000 \
@@ -101,7 +103,7 @@ python src/rolling_eval.py \
 
 ### Ensemble Optimization
 ```bash
-python src/ensemble_opt.py \
+py src/ensemble_opt.py \
     --predictions results/rf_test_predictions.csv \
     --predictions results/gbm_test_predictions.csv \
     --output results/ensemble_metrics.json
@@ -114,10 +116,10 @@ python src/ensemble_opt.py \
 
 ## Generated Artifacts
 
-- `results/*.json`: Metrics for persistence, Ridge, RF, GBM, LSTM, ensemble, ablation configs.
-- `results/*.png`: Plots for EDA, model comparisons, prediction vs actual, feature importance, ablation bar chart.
-- `models/*.joblib`: Compressed scikit-learn pipelines (RF/GBM).
-- `models/lstm_best.pt`: Best-performing LSTM checkpoint (from notebook).
+- `results/*.json`: Metrics for persistence, Ridge, RF, GBM, LSTM, ensemble, ablation configs. Nested CV results in `*_nested_cv_results.json`.
+- `results/*.png`: Plots for EDA, model comparisons, prediction vs actual, feature importance, ablation bar chart, ensemble vs baseline comparisons.
+- `models/*.joblib`: Compressed scikit-learn pipelines (RF/GBM). *Note: Large model files are gitignored; regenerate via `make train`.*
+- `models/lstm_best.pt`: Best-performing LSTM checkpoint (from notebook). *Note: Large model files are gitignored.*
 
 ---
 

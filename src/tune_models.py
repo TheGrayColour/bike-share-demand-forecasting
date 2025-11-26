@@ -1,7 +1,7 @@
 """tune_models.py
 
-Randomized hyperparameter search for RandomForest / GradientBoosting models
-using TimeSeriesSplit. Saves CV results, best params, and test metrics.
+Nested cross-validation hyperparameter tuning for RandomForest / GradientBoosting models.
+Uses outer CV loop for robust evaluation and inner CV loop for hyperparameter search.
 
 Usage:
     python src/tune_models.py \
@@ -107,76 +107,212 @@ def make_serializable(cv_results: dict) -> dict:
 DEFAULT_RANDOM_SEARCH_BUDGET = {"rf": 160, "gbm": 120}
 
 
+def nested_cv_tuning(
+    X: pd.DataFrame,
+    y: pd.Series,
+    model: str,
+    random_state: int,
+    outer_splits: int = 5,
+    inner_splits: int = 5,
+    n_iter: int = 120,
+) -> tuple[dict, list[dict], dict]:
+    """
+    Perform nested cross-validation for hyperparameter tuning.
+    
+    Returns:
+        - best_params: Most frequently selected hyperparameters across outer folds
+        - outer_fold_results: List of results for each outer fold
+        - nested_cv_metrics: Average metrics across outer folds
+    """
+    outer_cv = TimeSeriesSplit(n_splits=outer_splits)
+    inner_cv = TimeSeriesSplit(n_splits=inner_splits)
+    
+    outer_fold_results = []
+    all_best_params = []
+    
+    print(f"Starting nested CV: {outer_splits} outer folds, {inner_splits} inner folds")
+    
+    for fold_idx, (train_idx, val_idx) in enumerate(outer_cv.split(X), 1):
+        print(f"\n--- Outer Fold {fold_idx}/{outer_splits} ---")
+        X_train_fold = X.iloc[train_idx]
+        X_val_fold = X.iloc[val_idx]
+        y_train_fold = y.iloc[train_idx]
+        y_val_fold = y.iloc[val_idx]
+        
+        # Build preprocessor on training fold only
+        preprocessor = build_preprocessor(X_train_fold)
+        estimator = build_estimator(model, random_state)
+        pipeline = Pipeline(steps=[("preprocess", preprocessor), ("model", estimator)])
+        
+        # Inner CV: hyperparameter search
+        search = RandomizedSearchCV(
+            estimator=pipeline,
+            param_distributions=param_distributions(model),
+            n_iter=n_iter,
+            scoring="neg_root_mean_squared_error",
+            cv=inner_cv,
+            n_jobs=-1,
+            random_state=random_state,
+            verbose=0,
+            return_train_score=True,
+        )
+        search.fit(X_train_fold, y_train_fold)
+        
+        # Evaluate best model on outer validation set
+        best_pipeline = search.best_estimator_
+        val_preds = best_pipeline.predict(X_val_fold)
+        val_metrics = regression_metrics(y_val_fold, val_preds)
+        
+        fold_result = {
+            "fold": fold_idx,
+            "best_params": search.best_params_,
+            "best_cv_score": float(-search.best_score_),
+            "val_metrics": val_metrics,
+            "train_size": len(train_idx),
+            "val_size": len(val_idx),
+        }
+        outer_fold_results.append(fold_result)
+        all_best_params.append(search.best_params_)
+        
+        print(f"  Best CV RMSE: {fold_result['best_cv_score']:.2f}")
+        print(f"  Val RMSE: {val_metrics['rmse']:.2f}")
+        print(f"  Best params: {search.best_params_}")
+    
+    # Find most common best params (simple voting)
+    param_counts = {}
+    for params in all_best_params:
+        params_key = tuple(sorted(params.items()))
+        param_counts[params_key] = param_counts.get(params_key, 0) + 1
+    
+    most_common_params = max(param_counts.items(), key=lambda x: x[1])[0]
+    best_params = dict(most_common_params)
+    
+    # Average metrics across outer folds
+    nested_cv_metrics = {
+        "rmse": float(np.mean([r["val_metrics"]["rmse"] for r in outer_fold_results])),
+        "mae": float(np.mean([r["val_metrics"]["mae"] for r in outer_fold_results])),
+        "mape": float(np.mean([r["val_metrics"]["mape"] for r in outer_fold_results])),
+        "r2": float(np.mean([r["val_metrics"]["r2"] for r in outer_fold_results])),
+        "rmse_std": float(np.std([r["val_metrics"]["rmse"] for r in outer_fold_results])),
+        "mae_std": float(np.std([r["val_metrics"]["mae"] for r in outer_fold_results])),
+    }
+    
+    return best_params, outer_fold_results, nested_cv_metrics
+
+
 def main(args: argparse.Namespace) -> None:
     df = pd.read_csv(args.input, parse_dates=["timestamp"])
     df = df.sort_values("timestamp").reset_index(drop=True)
     df = add_cyclical_features(df)
 
+    # Split into train/test (test set is held out completely)
     X_train, X_test, y_train, y_test = chronological_split(df, args.target, args.test_size)
+    
+    # Perform nested CV on training set
+    n_iter = args.n_iter or DEFAULT_RANDOM_SEARCH_BUDGET[args.model]
+    best_params, outer_fold_results, nested_cv_metrics = nested_cv_tuning(
+        X=X_train,
+        y=y_train,
+        model=args.model,
+        random_state=args.random_state,
+        outer_splits=args.outer_splits,
+        inner_splits=args.inner_splits,
+        n_iter=n_iter,
+    )
+    
+    # Train final model on full training set with best params
+    print(f"\n--- Training final model on full training set ---")
     preprocessor = build_preprocessor(X_train)
     estimator = build_estimator(args.model, args.random_state)
-    pipeline = Pipeline(steps=[("preprocess", preprocessor), ("model", estimator)])
-
-    tscv = TimeSeriesSplit(n_splits=args.cv_splits)
-    n_iter = args.n_iter or DEFAULT_RANDOM_SEARCH_BUDGET[args.model]
-    search = RandomizedSearchCV(
-        estimator=pipeline,
-        param_distributions=param_distributions(args.model),
-        n_iter=n_iter,
-        scoring="neg_root_mean_squared_error",
-        cv=tscv,
-        n_jobs=-1,
-        random_state=args.random_state,
-        verbose=1,
-        return_train_score=True,
-    )
-    search.fit(X_train, y_train)
+    
+    # Apply best params to estimator
+    if args.model == "rf":
+        final_estimator = RandomForestRegressor(
+            random_state=args.random_state,
+            n_jobs=-1,
+            **{k.replace("model__", ""): v for k, v in best_params.items()},
+        )
+    else:  # gbm
+        final_estimator = GradientBoostingRegressor(
+            random_state=args.random_state,
+            **{k.replace("model__", ""): v for k, v in best_params.items()},
+        )
+    
+    final_pipeline = Pipeline(steps=[("preprocess", preprocessor), ("model", final_estimator)])
+    final_pipeline.fit(X_train, y_train)
+    
+    # Evaluate on held-out test set
+    test_preds = final_pipeline.predict(X_test)
+    test_metrics = regression_metrics(y_test, test_preds)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir = Path(args.model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    best_pipeline = search.best_estimator_
-    preds = best_pipeline.predict(X_test)
-    metrics = regression_metrics(y_test, preds)
-
     prefix = f"{args.model}"
-    cv_results_path = output_dir / f"{prefix}_cv_results.json"
-    with cv_results_path.open("w") as f:
-        json.dump(make_serializable(search.cv_results_), f, indent=2)
-
+    
+    # Save nested CV results
+    nested_cv_path = output_dir / f"{prefix}_nested_cv_results.json"
+    with nested_cv_path.open("w") as f:
+        json.dump({
+            "outer_fold_results": outer_fold_results,
+            "nested_cv_metrics": nested_cv_metrics,
+            "best_params": best_params,
+        }, f, indent=2)
+    
     best_params_path = output_dir / f"{prefix}_best_params.json"
     with best_params_path.open("w") as f:
-        json.dump(search.best_params_, f, indent=2)
+        json.dump(best_params, f, indent=2)
 
+    # Save test metrics
     metrics_path = output_dir / f"{prefix}_tuned_metrics.json"
     with metrics_path.open("w") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump({
+            "test_metrics": test_metrics,
+            "nested_cv_metrics": nested_cv_metrics,
+        }, f, indent=2)
 
     model_path = model_dir / f"{prefix}_tuned_pipeline.joblib"
-    joblib.dump(best_pipeline, model_path, compress=3)
+    joblib.dump(final_pipeline, model_path, compress=3)
 
-    print(f"Best params saved to {best_params_path}")
-    print(f"CV results saved to {cv_results_path}")
-    print(f"Tuned metrics: {metrics}")
-    print(f"Saved tuned model to {model_path}")
+    print(f"\n=== Results ===")
+    print(f"Nested CV RMSE: {nested_cv_metrics['rmse']:.2f} ± {nested_cv_metrics['rmse_std']:.2f}")
+    print(f"Test RMSE: {test_metrics['rmse']:.2f}")
+    print(f"Best params: {best_params}")
+    print(f"\nSaved nested CV results to {nested_cv_path}")
+    print(f"Saved best params to {best_params_path}")
+    print(f"Saved test metrics to {metrics_path}")
+    print(f"Saved final model to {model_path}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Hyperparameter tuning for bike-share models.")
+    parser = argparse.ArgumentParser(
+        description="Nested cross-validation hyperparameter tuning for bike-share models."
+    )
     parser.add_argument("--input", required=True, help="Processed CSV.")
     parser.add_argument("--output-dir", default="results", help="Directory for metrics and results.")
     parser.add_argument("--model-dir", default="models", help="Directory for serialized pipelines.")
     parser.add_argument("--model", choices=["rf", "gbm"], default="rf")
     parser.add_argument("--target", default="cnt")
-    parser.add_argument("--test-size", type=float, default=0.2)
-    parser.add_argument("--cv-splits", type=int, default=5)
+    parser.add_argument("--test-size", type=float, default=0.2, help="Fraction held out as final test set.")
+    parser.add_argument(
+        "--outer-splits",
+        type=int,
+        default=5,
+        help="Number of outer CV folds for robust evaluation.",
+    )
+    parser.add_argument(
+        "--inner-splits",
+        type=int,
+        default=5,
+        help="Number of inner CV folds for hyperparameter search.",
+    )
     parser.add_argument(
         "--n-iter",
         type=int,
         default=None,
-        help="RandomizedSearchCV budget. Defaults to 160 for RF, 120 for GBM.",
+        help="RandomizedSearchCV budget per inner fold. Defaults to 160 for RF, 120 for GBM.",
     )
     parser.add_argument("--random-state", type=int, default=42)
     args = parser.parse_args()

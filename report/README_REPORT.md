@@ -20,10 +20,16 @@ This living document tracks the modeling enhancements that should be highlighted
 - Weather interactions (e.g., `weather_temp_x_is_weekend`) are generated automatically once weather data is merged.
 - Day-of-year cyclical encodings augment previously available hour/day-of-week/month cycles.
 
-### Hyperparameter Search
-- `src/tune_models.py` now defaults to 160 RandomizedSearchCV draws for RF and 120 for GBM (TimeSeriesSplit=5).
-- The expanded search writes full CV tables (`results/rf_cv_results.json`, `results/gbm_cv_results.json`), best params, tuned metrics, and serialized pipelines.
-- Reference these artifacts when discussing model capacity/overfitting checks.
+### Hyperparameter Search (Nested Cross-Validation)
+- `src/tune_models.py` implements **nested cross-validation** for robust hyperparameter tuning:
+  - **Outer CV loop** (default 5 folds): Evaluates model performance on held-out validation sets
+  - **Inner CV loop** (default 5 folds): Performs RandomizedSearchCV for hyperparameter selection within each outer fold
+  - Default search budget: 160 iterations for RF, 120 for GBM per inner fold
+- Outputs:
+  - `results/{model}_nested_cv_results.json`: Complete nested CV results including per-fold metrics and best params
+  - `results/{model}_best_params.json`: Most frequently selected hyperparameters across outer folds
+  - `results/{model}_tuned_metrics.json`: Both nested CV metrics (average ± std) and final test set metrics
+- This approach prevents overfitting to CV folds and provides more realistic performance estimates.
 
 ### Rolling-Origin Evaluation
 - Script: `python src/rolling_eval.py --input data/processed_hour.csv --model rf --train-window 7000 --test-window 168 --step 168 --strategy sliding`.

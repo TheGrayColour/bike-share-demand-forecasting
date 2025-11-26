@@ -169,6 +169,9 @@ def main(args: argparse.Namespace) -> None:
     if args.weather and not args.disable_weather_interactions:
         df = add_weather_interactions(df, base_cols=["hour", "is_weekend", "is_holiday"])
 
+    # Drop columns that directly leak the target
+    df = df.drop(columns=[col for col in ["casual", "registered"] if col in df.columns])
+
     df = df.dropna().reset_index(drop=True)
     save_csv(df, args.output)
     print(f"Saved processed data to {args.output}. Rows: {len(df):,}")

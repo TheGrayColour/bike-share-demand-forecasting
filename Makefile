@@ -1,4 +1,4 @@
-PYTHON ?= python
+PYTHON ?= py
 RAW_DATA ?= /mnt/data/hour.csv
 PROCESSED ?= data/processed_hour.csv
 RESULTS ?= results
@@ -24,11 +24,11 @@ train-gbm:
 tune: tune-rf tune-gbm
 
 tune-rf:
-	@echo ">> RandomizedSearchCV for RandomForest (expanded budget)"
+	@echo ">> Nested CV hyperparameter tuning for RandomForest"
 	$(PYTHON) src/tune_models.py --input $(PROCESSED) --model rf --output-dir $(RESULTS) --model-dir $(MODELS)
 
 tune-gbm:
-	@echo ">> RandomizedSearchCV for GradientBoosting (expanded budget)"
+	@echo ">> Nested CV hyperparameter tuning for GradientBoosting"
 	$(PYTHON) src/tune_models.py --input $(PROCESSED) --model gbm --output-dir $(RESULTS) --model-dir $(MODELS)
 
 rolling-eval:

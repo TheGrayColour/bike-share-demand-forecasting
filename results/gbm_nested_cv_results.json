@@ -1,0 +1,108 @@
+{
+  "outer_fold_results": [
+    {
+      "fold": 1,
+      "best_params": {
+        "model__subsample": 0.6,
+        "model__n_estimators": 700,
+        "model__max_depth": 4,
+        "model__learning_rate": 0.05
+      },
+      "best_cv_score": 19.486245122831168,
+      "val_metrics": {
+        "rmse": 61.10536203921337,
+        "mae": 37.75050929813414,
+        "mape": 0.40164479806598363,
+        "r2": 0.828791748746821
+      },
+      "train_size": 2336,
+      "val_size": 2336
+    },
+    {
+      "fold": 2,
+      "best_params": {
+        "model__subsample": 0.6,
+        "model__n_estimators": 900,
+        "model__max_depth": 3,
+        "model__learning_rate": 0.03
+      },
+      "best_cv_score": 29.16289415317131,
+      "val_metrics": {
+        "rmse": 26.52321748465609,
+        "mae": 17.52914733108338,
+        "mape": 0.2484596058445698,
+        "r2": 0.9679139423474338
+      },
+      "train_size": 4672,
+      "val_size": 2336
+    },
+    {
+      "fold": 3,
+      "best_params": {
+        "model__subsample": 0.6,
+        "model__n_estimators": 900,
+        "model__max_depth": 3,
+        "model__learning_rate": 0.05
+      },
+      "best_cv_score": 31.439665222584686,
+      "val_metrics": {
+        "rmse": 41.35120762587415,
+        "mae": 36.45097159579256,
+        "mape": 2.181221567480383,
+        "r2": 0.8780405195624081
+      },
+      "train_size": 7008,
+      "val_size": 2336
+    },
+    {
+      "fold": 4,
+      "best_params": {
+        "model__subsample": 0.6,
+        "model__n_estimators": 500,
+        "model__max_depth": 5,
+        "model__learning_rate": 0.05
+      },
+      "best_cv_score": 29.326317000964202,
+      "val_metrics": {
+        "rmse": 53.669233020325564,
+        "mae": 27.8201088424488,
+        "mape": 0.30168923010761123,
+        "r2": 0.9162913335192109
+      },
+      "train_size": 9344,
+      "val_size": 2336
+    },
+    {
+      "fold": 5,
+      "best_params": {
+        "model__subsample": 0.6,
+        "model__n_estimators": 500,
+        "model__max_depth": 4,
+        "model__learning_rate": 0.08
+      },
+      "best_cv_score": 35.84016143566064,
+      "val_metrics": {
+        "rmse": 37.604848249802934,
+        "mae": 25.140256821906956,
+        "mape": 0.1937456680638636,
+        "r2": 0.9701537464182979
+      },
+      "train_size": 11680,
+      "val_size": 2336
+    }
+  ],
+  "nested_cv_metrics": {
+    "rmse": 44.05077368397443,
+    "mae": 28.93819877787317,
+    "mape": 0.6653521739124822,
+    "r2": 0.9122382581188344,
+    "rmse_std": 12.160810679365918,
+    "mae_std": 7.482506468279898
+  },
+  "best_params": {
+    "model__learning_rate": 0.05,
+    "model__max_depth": 4,
+    "model__n_estimators": 700,
+    "model__subsample": 0.6
+  }
+}
